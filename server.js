@@ -1,74 +1,230 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const path = require('path');
+const socket = io({ autoConnect: false }); 
+let myRole = null; 
 
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server);
+// Ресурсы
+const damagedCarImg = new Image();
+damagedCarImg.src = 'images/carDamaged.png';
+const sound = new Audio('damagesound.mp3');
+const music = new Audio('nes.mp3');
+music.loop = true;
 
-// 1. Указываем папку со статическими файлами (картинки, звуки, скрипты)
-app.use(express.static(__dirname));
+const explosion = document.createElement('img');
+explosion.src = 'pontus-ornemark-explosion-animation-update_transparent.gif'; 
+explosion.style.position = 'absolute';
+explosion.style.display = 'none';
+explosion.style.zIndex = '1000';
+document.body.appendChild(explosion);
 
-// 2. Добавляем маршрут для главной страницы (исправляет ошибку Cannot GET /)
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
+const scale = 0.3;
+const speed = 5;
+const carSpeed = 8;
+const keys = {};
+
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+let timer = null;
+let objects = [];
+let winnerText = ""; 
+
+const info = document.createElement('div');
+info.style = "position:fixed; bottom:20px; right:20px; color:white; font-size:30px; font-family:Arial; font-weight:bold; text-shadow: 2px 2px black; display:none;";
+document.body.appendChild(info);
+
+function startSearch() {
+    document.getElementById("buttonstart").innerText = 'ПОИСК ИГРОКА...';
+    document.getElementById("buttonstart").disabled = true;
+    socket.connect();
+}
+document.getElementById("buttonstart").onclick = startSearch;
+
+class Road {
+    constructor(image, y) {
+        this.x = 0;
+        this.y = y;
+        this.image = new Image();
+        this.image.src = image;
+    }
+    Update(road) {
+        this.y += speed;
+        if (this.y > canvas.height) this.y = road.y - canvas.height + speed;
+    }
+}
+
+class Car {
+    constructor(imagePath, x, y, label) {
+        this.dead = false;
+        this.x = x;
+        this.y = y;
+        this.label = label; 
+        this.image = new Image();
+        this.image.src = imagePath;
+        this.loaded = false;
+        this.image.onload = () => { this.loaded = true; };
+    }
+    Update() {
+        this.y += speed;
+        if (this.y > canvas.height + 600) this.dead = true;
+    }
+    Collide(car) {
+        if (!this.loaded || !car.loaded) return false;
+        const myW = this.image.width * scale;
+        const myH = this.image.height * scale;
+        const otherW = car.image.width * scale;
+        const otherH = car.image.height * scale;
+
+        return (this.y < car.y + otherH && this.y + myH > car.y && 
+                this.x < car.x + otherW && this.x + myW > car.x);
+    }
+    Move(dx, dy, otherPlayer) {
+        if (this.dead) return;
+        let nextX = this.x + dx;
+        let nextY = this.y + dy;
+        if (nextX < 0 || nextX + this.image.width * scale > canvas.width) nextX = this.x;
+        if (nextY < 0 || nextY + this.image.height * scale > canvas.height) nextY = this.y;
+        
+        // Проверка столкновения между игроками (чтобы не проезжали сквозь друг друга)
+        const myW = this.image.width * scale;
+        const myH = this.image.height * scale;
+        const otherW = otherPlayer.image.width * scale;
+        const otherH = otherPlayer.image.height * scale;
+        
+        const collision = (nextY < otherPlayer.y + otherH && nextY + myH > otherPlayer.y && 
+                           nextX < otherPlayer.x + otherW && nextX + myW > otherPlayer.x);
+        
+        if (!collision || otherPlayer.dead) {
+            this.x = nextX;
+            this.y = nextY;
+        }
+    }
+}
+
+let roads = [new Road("images/road.jpg", 0), new Road("images/road.jpg", 0)];
+let player = new Car("images/car.png", 0, 0, "P1");
+let player2 = new Car("images/car.png", 0, 0, "P2");
+
+// --- СЕТЕВЫЕ СОБЫТИЯ ---
+socket.on('playerRole', (data) => {
+    myRole = data.role;
+    info.style.display = "block";
+    info.innerText = "Вы: " + myRole;
 });
 
-let waitingPlayer = null;
+socket.on('startGame', () => {
+    document.getElementById("buttonstart").innerText = "ИГРОК НАЙДЕН!";
+    setTimeout(() => {
+        document.getElementById("ui-overlay").style.display = "none";
+        music.play().catch(() => {});
+        Start();
+    }, 1000);
+});
 
-io.on('connection', (socket) => {
-    console.log('Пользователь подключился:', socket.id);
+// СИНХРОННЫЙ СПАВН ОТ СЕРВЕРА
+socket.on('spawnObstacle', (data) => {
+    // Масштабируем X координату под ширину экрана текущего игрока
+    const relativeX = (data.x / 800) * canvas.width; 
+    objects.push(new Car("images/car_red.png", relativeX, data.y, ""));
+});
 
-    if (!waitingPlayer) {
-        // Первый игрок зашел — ждет
-        waitingPlayer = socket;
-        socket.emit('playerRole', { role: 'P1' });
+socket.on('opponentMove', (data) => {
+    if (myRole === 'P1') { player2.x = data.x; player2.y = data.y; }
+    else { player.x = data.x; player.y = data.y; }
+});
+
+socket.on('finish', (data) => {
+    const loser = (data.loser === 'P1') ? player : player2;
+    TriggerExplosion(loser, false); 
+});
+
+// --- ЯДРО ИГРЫ ---
+function Resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    player.x = canvas.width * 0.3;
+    player.y = canvas.height - 200;
+    player2.x = canvas.width * 0.7;
+    player2.y = canvas.height - 200;
+    roads[1].y = canvas.height;
+}
+
+function Start() {
+    if (timer) clearInterval(timer);
+    winnerText = "";
+    Resize();
+    timer = setInterval(Update, 1000 / 60);
+}
+
+function TriggerExplosion(loser, sendSignal = true) {
+    if (timer == null) return;
+    clearInterval(timer);
+    timer = null;
+    
+    if (sendSignal) socket.emit('gameOver', { loser: (loser === player ? 'P1' : 'P2') });
+    
+    loser.dead = true;
+    loser.image = damagedCarImg;
+    explosion.style.left = (loser.x + (loser.image.width * scale)/2 - 150) + 'px';
+    explosion.style.top = (loser.y + (loser.image.height * scale)/2 - 150) + 'px';
+    explosion.style.display = 'block';
+    
+    setTimeout(() => explosion.style.display = 'none', 500);
+    winnerText = (loser === player) ? "PLAYER 2 WINS!" : "PLAYER 1 WINS!";
+    sound.play(); music.pause();
+    Draw();
+    setTimeout(() => location.reload(), 3000);
+}
+
+function Update() {
+    let dx = 0, dy = 0;
+    if (myRole === 'P1') {
+        if (keys["KeyA"]) dx -= carSpeed; if (keys["KeyD"]) dx += carSpeed;
+        if (keys["KeyW"]) dy -= carSpeed; if (keys["KeyS"]) dy += carSpeed;
+        player.Move(dx, dy, player2);
+        socket.emit('move', { x: player.x, y: player.y });
     } else {
-        // Второй игрок зашел — создаем комнату
-        const roomName = `room_${waitingPlayer.id}`;
-        const p1 = waitingPlayer;
-        const p2 = socket;
-
-        p1.join(roomName);
-        p2.join(roomName);
-
-        socket.emit('playerRole', { role: 'P2' });
-
-        // Уведомляем обоих, что игра началась
-        io.to(roomName).emit('startGame');
-
-        // Пересылаем координаты СВОЕЙ машины оппоненту
-        socket.on('move', (data) => {
-            socket.to(roomName).emit('opponentMove', data);
-        });
-
-        p1.on('move', (data) => {
-            p1.to(roomName).emit('opponentMove', data);
-        });
-
-        // Если кто-то врезался, сообщаем всем в комнате
-        socket.on('gameOver', (data) => {
-            io.to(roomName).emit('finish', data);
-        });
-
-        p1.on('gameOver', (data) => {
-            io.to(roomName).emit('finish', data);
-        });
-
-        waitingPlayer = null;
+        if (keys["ArrowLeft"]) dx -= carSpeed; if (keys["ArrowRight"]) dx += carSpeed;
+        if (keys["ArrowUp"]) dy -= carSpeed; if (keys["ArrowDown"]) dy += carSpeed;
+        player2.Move(dx, dy, player);
+        socket.emit('move', { x: player2.x, y: player2.y });
     }
 
-    socket.on('disconnect', () => {
-        if (waitingPlayer === socket) {
-            waitingPlayer = null;
-        }
-        console.log('Пользователь отключился');
-    });
-});
+    roads[0].Update(roads[1]);
+    roads[1].Update(roads[0]);
 
-// 3. Используем порт, который дает Render, или 3000 для локалки
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`Сервер запущен на порту ${PORT}`);
-});
+    for (let i = 0; i < objects.length; i++) {
+        objects[i].Update();
+        if (player.Collide(objects[i])) { TriggerExplosion(player); return; }
+        if (player2.Collide(objects[i])) { TriggerExplosion(player2); return; }
+    }
+    objects = objects.filter(n => !n.dead);
+    Draw();
+}
+
+function Draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (let r of roads) ctx.drawImage(r.image, 0, 0, r.image.width, r.image.height, r.x, r.y, canvas.width, canvas.height);
+    DrawCar(player); DrawCar(player2);
+    for (let obj of objects) DrawCar(obj);
+    if (winnerText !== "") {
+        ctx.fillStyle = "white"; ctx.strokeStyle = "black"; ctx.lineWidth = 8;
+        ctx.font = "bold 60px Arial"; ctx.textAlign = "center";
+        ctx.strokeText(winnerText, canvas.width / 2, canvas.height / 2);
+        ctx.fillText(winnerText, canvas.width / 2, canvas.height / 2);
+    }
+}
+
+function DrawCar(car) {
+    if (!car.loaded) return;
+    const w = car.image.width * scale;
+    const h = car.image.height * scale;
+    ctx.drawImage(car.image, 0, 0, car.image.width, car.image.height, car.x, car.y, w, h);
+    if (car.label && !car.dead) {
+        ctx.fillStyle = "yellow"; ctx.font = "bold 20px Arial"; ctx.textAlign = "center";
+        ctx.fillText(car.label, car.x + w/2, car.y - 10);
+    }
+}
+
+function RandomInteger(min, max) { return Math.round(min - 0.5 + Math.random() * (max - min + 1)); }
+window.addEventListener("keydown", (e) => keys[e.code] = true);
+window.addEventListener("keyup", (e) => keys[e.code] = false);
+window.addEventListener("resize", Resize);
