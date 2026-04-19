@@ -1,29 +1,118 @@
-const socket = io(); // Подключаемся к серверу
-let myRole = null; // P1 или P2
+const socket = io(); 
+let myRole = null; 
+
+// 1. Сначала объявляем все ресурсы (звуки, картинки)
+const damagedCarImg = new Image();
+damagedCarImg.src = 'images/carDamaged.png';
+
+const sound = new Audio('damagesound.mp3');
+const music = new Audio('nes.mp3');
+music.loop = true;
+
+const explosion = document.createElement('img');
+explosion.src = 'pontus-ornemark-explosion-animation-update_transparent.gif'; 
+explosion.style.position = 'absolute';
+explosion.style.display = 'none';
+explosion.style.zIndex = '1000';
+document.body.appendChild(explosion);
+
+// 2. Настройки игры
+let explosionDisplaySize = 300;
+const scale = 0.3;
+const speed = 5;
+const carSpeed = 8;
+const keys = {};
+
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+let timer = null;
+let objects = [];
+let winnerText = ""; 
 
 // UI элементы
-const btn = document.getElementById("buttonstart");
 const info = document.createElement('div');
 info.style = "position:fixed; bottom:20px; right:20px; color:white; font-size:30px; font-family:Arial; font-weight:bold; text-shadow: 2px 2px black;";
 document.body.appendChild(info);
 
-// Получаем роль от сервера
+const btn = document.getElementById("buttonstart");
+
+// 3. Классы
+class Road {
+    constructor(image, y) {
+        this.x = 0;
+        this.y = y;
+        this.image = new Image();
+        this.image.src = image;
+    }
+    Update(road) {
+        this.y += speed;
+        if (this.y > canvas.height) {
+            this.y = road.y - canvas.height + speed;
+        }
+    }
+}
+
+class Car {
+    constructor(image, x, y, label) {
+        this.dead = false;
+        this.x = x;
+        this.y = y;
+        this.label = label; 
+        this.image = new Image();
+        this.image.src = image;
+    }
+    Update() {
+        this.y += speed;
+        if (this.y > canvas.height + 100) this.dead = true;
+    }
+    CanMoveTo(newX, newY, otherCar) {
+        if (otherCar.dead) return true; 
+        const myW = this.image.width * scale;
+        const myH = this.image.height * scale;
+        const otherW = otherCar.image.width * scale;
+        const otherH = otherCar.image.height * scale;
+        return !(newY < otherCar.y + otherH && newY + myH > otherCar.y && newX < otherCar.x + otherW && newX + myW > otherCar.x);
+    }
+    Move(dx, dy, otherPlayer) {
+        if (this.dead) return;
+        let nextX = this.x + dx;
+        let nextY = this.y + dy;
+        if (nextX < 0 || nextX + this.image.width * scale > canvas.width) nextX = this.x;
+        if (nextY < 0 || nextY + this.image.height * scale > canvas.height) nextY = this.y;
+        if (this.CanMoveTo(nextX, nextY, otherPlayer)) {
+            this.x = nextX;
+            this.y = nextY;
+        }
+    }
+    Collide(car) {
+        if (this.y < car.y + car.image.height * scale && this.y + this.image.height * scale > car.y) {
+            if (this.x < car.x + car.image.width * scale && this.x + this.image.width * scale > car.x) return true;
+        }
+        return false;
+    }
+}
+
+let roads = [new Road("images/road.jpg", 0), new Road("images/road.jpg", 0)];
+let player = new Car("images/car.png", 0, 0, "P1");
+let player2 = new Car("images/car.png", 0, 0, "P2");
+
+// 4. Логика сокетов
 socket.on('playerRole', (data) => {
     myRole = data.role;
     info.innerText = "Вы: " + myRole;
 });
 
-// Когда нашелся оппонент
 socket.on('startGame', () => {
-    btn.innerText = "ИГРОК НАЙДЕН!";
+    if (btn) btn.innerText = "ИГРОК НАЙДЕН!";
     setTimeout(() => {
-        btn.remove();
+        const overlay = document.getElementById("ui-overlay");
+        if (overlay) overlay.style.display = "none";
         music.play();
         Start();
     }, 1000);
 });
 
-// Получаем движения оппонента
 socket.on('opponentMove', (data) => {
     if (myRole === 'P1') {
         player2.x = data.x;
@@ -34,19 +123,62 @@ socket.on('opponentMove', (data) => {
     }
 });
 
-// Получаем сигнал о конце игры
 socket.on('finish', (data) => {
     const loser = (data.loser === 'P1') ? player : player2;
-    TriggerExplosion(loser, false); // false чтобы не слать сигнал повторно
+    TriggerExplosion(loser, false); 
 });
 
-// ... (Весь старый код классов Road и Car остается без изменений) ...
+// 5. Функции игры
+function Resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    player.x = canvas.width * 0.3;
+    player.y = canvas.height - 200;
+    player2.x = canvas.width * 0.7;
+    player2.y = canvas.height - 200;
+    roads[1].y = canvas.height;
+}
 
-// В функции Update меняем отправку координат
+function Start() {
+    if (timer) clearInterval(timer);
+    winnerText = "";
+    Resize();
+    timer = setInterval(Update, 1000 / 60);
+}
+
+function Stop() {
+    if (timer) clearInterval(timer);
+    timer = null;
+}
+
+function TriggerExplosion(loser, sendSignal = true) {
+    Stop(); 
+    if (sendSignal) socket.emit('gameOver', { loser: (loser === player ? 'P1' : 'P2') });
+    
+    loser.dead = true;
+    loser.image = damagedCarImg;
+
+    const centerX = loser.x + (loser.image.width * scale) / 2;
+    const centerY = loser.y + (loser.image.height * scale) / 2;
+
+    explosion.style.left = (centerX - explosionDisplaySize / 2) + 'px';
+    explosion.style.top = (centerY - explosionDisplaySize / 2) + 'px';
+    explosion.style.width = explosionDisplaySize + 'px';
+    explosion.style.display = 'block';
+
+    setTimeout(() => { explosion.style.display = 'none'; }, 500);
+
+    winnerText = (loser === player) ? "PLAYER 2 WINS!" : "PLAYER 1 WINS!";
+    sound.play();
+    music.pause();
+    Draw();
+
+    setTimeout(() => { location.reload(); }, 3000);
+}
+
 function Update() {
     let dx = 0, dy = 0;
     
-    // Управляем только СВОЕЙ машиной
     if (myRole === 'P1') {
         if (keys["KeyA"]) dx -= carSpeed;
         if (keys["KeyD"]) dx += carSpeed;
@@ -54,7 +186,7 @@ function Update() {
         if (keys["KeyS"]) dy += carSpeed;
         player.Move(dx, dy, player2);
         socket.emit('move', { x: player.x, y: player.y });
-    } else {
+    } else if (myRole === 'P2') {
         if (keys["ArrowLeft"]) dx -= carSpeed;
         if (keys["ArrowRight"]) dx += carSpeed;
         if (keys["ArrowUp"]) dy -= carSpeed;
@@ -66,41 +198,56 @@ function Update() {
     roads[0].Update(roads[1]);
     roads[1].Update(roads[0]);
 
-    // Синхронный спавн препятствий лучше делать на сервере, 
-    // но для простоты оставим как есть (могут быть небольшие расхождения)
+    // Генерация препятствий (лучше делать на одной стороне, но оставим для простоты)
     if (RandomInteger(0, 10000) > 9750) {
         objects.push(new Car("Images/car_red.png", RandomInteger(30, canvas.width - 50), -200, ""));
     }
 
     for (let i = 0; i < objects.length; i++) {
         objects[i].Update();
-        if (player.Collide(objects[i])) { 
-            socket.emit('gameOver', { loser: 'P1' }); 
-            return; 
-        }
-        if (player2.Collide(objects[i])) { 
-            socket.emit('gameOver', { loser: 'P2' }); 
-            return; 
-        }
+        if (player.Collide(objects[i])) { TriggerExplosion(player); return; }
+        if (player2.Collide(objects[i])) { TriggerExplosion(player2); return; }
     }
     objects = objects.filter(n => !n.dead);
     Draw();
 }
 
-function Start() {
-    if (timer) clearInterval(timer);
-    winnerText = "";
-    Resize();
-    timer = setInterval(Update, 1000 / 60);
+function Draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (let r of roads) {
+        ctx.drawImage(r.image, 0, 0, r.image.width, r.image.height, r.x, r.y, canvas.width, canvas.height);
+    }
+    DrawCar(player);
+    DrawCar(player2);
+    for (let obj of objects) DrawCar(obj);
+
+    if (winnerText !== "") {
+        ctx.fillStyle = "white";
+        ctx.strokeStyle = "black";
+        ctx.lineWidth = 8;
+        ctx.font = "bold 60px Arial";
+        ctx.textAlign = "center";
+        ctx.strokeText(winnerText, canvas.width / 2, canvas.height / 2);
+        ctx.fillText(winnerText, canvas.width / 2, canvas.height / 2);
+    }
 }
 
-// Изменяем TriggerExplosion
-function TriggerExplosion(loser, sendSignal = true) {
-    Stop(); 
-    loser.dead = true;
-    loser.image = damagedCarImg;
-    // ... логика взрыва ...
-    winnerText = (loser === player) ? "PLAYER 2 WINS!" : "PLAYER 1 WINS!";
-    Draw();
-    setTimeout(() => { location.reload(); }, 3000);
+function DrawCar(car) {
+    const w = car.image.width * scale;
+    const h = car.image.height * scale;
+    ctx.drawImage(car.image, 0, 0, car.image.width, car.image.height, car.x, car.y, w, h);
+    if (car.label && !car.dead) {
+        ctx.fillStyle = "yellow";
+        ctx.font = "bold 20px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText(car.label, car.x + w / 2, car.y - 10);
+    }
 }
+
+function RandomInteger(min, max) {
+    return Math.round(min - 0.5 + Math.random() * (max - min + 1));
+}
+
+window.addEventListener("keydown", (e) => { keys[e.code] = true; });
+window.addEventListener("keyup", (e) => { keys[e.code] = false; });
+window.addEventListener("resize", Resize);
