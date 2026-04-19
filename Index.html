@@ -1,0 +1,21 @@
+<body>
+    <div id="ui-overlay" style="text-align: center; color: white; font-family: Arial; padding-top: 50px;">
+        <h1 style="font-size: 50px;">ГОНКИ ОНЛАЙН</h1>
+        
+        <div style="background: rgba(0,0,0,0.7); display: inline-block; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+            <h3>ИНСТРУКЦИЯ:</h3>
+            <p><b>Игрок 1 (P1):</b> Управление клавишами <b>W, A, S, D</b></p>
+            <p><b>Игрок 2 (P2):</b> Управление <b>Стрелками</b></p>
+            <p><i>Игра начнется автоматически, когда подключится второй игрок.</i></p>
+        </div>
+
+        <button id="buttonstart" onclick="this.innerText='ПОИСК ИГРОКА...'; this.disabled=true;">ПОДКЛЮЧИТЬСЯ</button>
+    </div>
+    
+    <div class="wrapper">
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="game.js"></script>
+</body>
