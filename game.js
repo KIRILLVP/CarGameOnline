@@ -1,7 +1,8 @@
-const socket = io(); 
+// Отключаем авто-подключение сокетов при загрузке страницы
+const socket = io({ autoConnect: false }); 
 let myRole = null; 
 
-// 1. Сначала объявляем все ресурсы (звуки, картинки)
+// Ресурсы
 const damagedCarImg = new Image();
 damagedCarImg.src = 'images/carDamaged.png';
 
@@ -16,8 +17,6 @@ explosion.style.display = 'none';
 explosion.style.zIndex = '1000';
 document.body.appendChild(explosion);
 
-// 2. Настройки игры
-let explosionDisplaySize = 300;
 const scale = 0.3;
 const speed = 5;
 const carSpeed = 8;
@@ -30,14 +29,23 @@ let timer = null;
 let objects = [];
 let winnerText = ""; 
 
-// UI элементы
 const info = document.createElement('div');
-info.style = "position:fixed; bottom:20px; right:20px; color:white; font-size:30px; font-family:Arial; font-weight:bold; text-shadow: 2px 2px black;";
+info.style = "position:fixed; bottom:20px; right:20px; color:white; font-size:30px; font-family:Arial; font-weight:bold; text-shadow: 2px 2px black; display:none;";
 document.body.appendChild(info);
 
-const btn = document.getElementById("buttonstart");
+// ФУНКЦИЯ КНОПКИ СТАРТ
+function startSearch() {
+    const btn = document.getElementById("buttonstart");
+    btn.innerText = 'ПОИСК ИГРОКА...';
+    btn.disabled = true;
 
-// 3. Классы
+    // Теперь подключаемся к серверу
+    socket.connect();
+}
+
+// Привязываем функцию к кнопке (убедись, что в HTML у кнопки id="buttonstart")
+document.getElementById("buttonstart").onclick = startSearch;
+
 class Road {
     constructor(image, y) {
         this.x = 0;
@@ -54,13 +62,17 @@ class Road {
 }
 
 class Car {
-    constructor(image, x, y, label) {
+    constructor(imagePath, x, y, label) {
         this.dead = false;
         this.x = x;
         this.y = y;
         this.label = label; 
         this.image = new Image();
-        this.image.src = image;
+        this.image.src = imagePath;
+        this.loaded = false;
+        this.image.onload = () => { this.loaded = true; };
+        // Если картинка не найдена, ставим флаг, чтобы не рисовать её
+        this.image.onerror = () => { console.error("Не найден файл:", imagePath); };
     }
     Update() {
         this.y += speed;
@@ -86,6 +98,7 @@ class Car {
         }
     }
     Collide(car) {
+        if (!this.loaded || !car.loaded) return false;
         if (this.y < car.y + car.image.height * scale && this.y + this.image.height * scale > car.y) {
             if (this.x < car.x + car.image.width * scale && this.x + this.image.width * scale > car.x) return true;
         }
@@ -97,18 +110,20 @@ let roads = [new Road("images/road.jpg", 0), new Road("images/road.jpg", 0)];
 let player = new Car("images/car.png", 0, 0, "P1");
 let player2 = new Car("images/car.png", 0, 0, "P2");
 
-// 4. Логика сокетов
+// СОКЕТЫ
 socket.on('playerRole', (data) => {
     myRole = data.role;
+    info.style.display = "block";
     info.innerText = "Вы: " + myRole;
 });
 
 socket.on('startGame', () => {
-    if (btn) btn.innerText = "ИГРОК НАЙДЕН!";
+    document.getElementById("buttonstart").innerText = "ИГРОК НАЙДЕН!";
     setTimeout(() => {
         const overlay = document.getElementById("ui-overlay");
         if (overlay) overlay.style.display = "none";
-        music.play();
+        // Теперь музыка сработает, так как был клик по кнопке
+        music.play().catch(e => console.log("Музыка не запустилась:", e));
         Start();
     }, 1000);
 });
@@ -128,7 +143,6 @@ socket.on('finish', (data) => {
     TriggerExplosion(loser, false); 
 });
 
-// 5. Функции игры
 function Resize() {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
@@ -152,6 +166,7 @@ function Stop() {
 }
 
 function TriggerExplosion(loser, sendSignal = true) {
+    if (timer == null) return; // Чтобы не взрываться дважды
     Stop(); 
     if (sendSignal) socket.emit('gameOver', { loser: (loser === player ? 'P1' : 'P2') });
     
@@ -161,9 +176,9 @@ function TriggerExplosion(loser, sendSignal = true) {
     const centerX = loser.x + (loser.image.width * scale) / 2;
     const centerY = loser.y + (loser.image.height * scale) / 2;
 
-    explosion.style.left = (centerX - explosionDisplaySize / 2) + 'px';
-    explosion.style.top = (centerY - explosionDisplaySize / 2) + 'px';
-    explosion.style.width = explosionDisplaySize + 'px';
+    explosion.style.left = (centerX - 150) + 'px';
+    explosion.style.top = (centerY - 150) + 'px';
+    explosion.style.width = '300px';
     explosion.style.display = 'block';
 
     setTimeout(() => { explosion.style.display = 'none'; }, 500);
@@ -198,9 +213,9 @@ function Update() {
     roads[0].Update(roads[1]);
     roads[1].Update(roads[0]);
 
-    // Генерация препятствий (лучше делать на одной стороне, но оставим для простоты)
-    if (RandomInteger(0, 10000) > 9750) {
-        objects.push(new Car("Images/car_red.png", RandomInteger(30, canvas.width - 50), -200, ""));
+    // ВАЖНО: проверь путь Images/car_red.png или images/car_red.png
+    if (RandomInteger(0, 10000) > 9850) { // Сделал спавн чуть реже
+        objects.push(new Car("images/car_red.png", RandomInteger(30, canvas.width - 50), -200, ""));
     }
 
     for (let i = 0; i < objects.length; i++) {
@@ -233,6 +248,7 @@ function Draw() {
 }
 
 function DrawCar(car) {
+    if (!car.loaded) return; // НЕ РИСУЕМ, если не загрузилась (исправляет Broken State)
     const w = car.image.width * scale;
     const h = car.image.height * scale;
     ctx.drawImage(car.image, 0, 0, car.image.width, car.image.height, car.x, car.y, w, h);
